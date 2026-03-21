@@ -94,6 +94,7 @@
 ✅ **完成标志**：重新部署成功，没有错误提示
 
 > 说明：如果后续改为使用 Git 自动构建，Cloudflare 会直接读取仓库中的 `wrangler.toml` 进行部署。当前项目配置已显式声明 `SECRETS_KV`，正常构建升级不会把现有 KV 绑定解绑。
+> 如果你在 Cloudflare Dashboard 中手动填写 Git 构建命令，**部署命令请使用 `npm run deploy`，不要直接写 `npx wrangler deploy`**，否则会绕过项目里的 KV 复用逻辑。
 
 ---
 

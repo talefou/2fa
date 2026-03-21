@@ -31,6 +31,7 @@ const versionStrategy = args.includes('--git') ? '--git' :
 // 提取环境参数
 const envIndex = args.indexOf('--env');
 const envArg = envIndex !== -1 && args[envIndex + 1] ? `--env ${args[envIndex + 1]}` : '';
+const targetEnv = envIndex !== -1 && args[envIndex + 1] ? args[envIndex + 1] : '';
 
 console.log('');
 console.log('🚀 ========================================');
@@ -62,58 +63,39 @@ try {
     `SW_VERSION = "${version}"`
   );
 
-  // 检测 KV namespace 配置（支持仅声明 binding、不填写 id 的 Git 构建模式）
-  const hasKvBinding = /\[\[kv_namespaces\]\][\s\S]*?binding = "SECRETS_KV"/.test(modifiedConfig);
-  if (!hasKvBinding) {
-    console.log('   🔍 检测到 KV namespace 未配置，查找已有的...');
+  // 确保 KV namespace 绑定指向现有资源，避免 Git 构建自动创建新的 namespace。
+  const kvListOutput = execSync('npx wrangler kv namespace list', { encoding: 'utf-8' });
+  const namespaces = JSON.parse(kvListOutput);
 
-    let kvId = null;
+  const kvConfig = ensureKvNamespaceConfig(modifiedConfig, {
+    blockPattern: /\[\[kv_namespaces\]\]\r?\nbinding = "SECRETS_KV"(?:\r?\nid = "[^"]*")?(?:\r?\npreview_id = "[^"]*")?/,
+    commentedPattern: /# \[\[kv_namespaces\]\]\r?\n# binding = "SECRETS_KV"\r?\n(?:#[^\n]*\r?\n)*/,
+    insertBeforePattern: /(\[vars\])/,
+    blockHeader: '[[kv_namespaces]]',
+    binding: 'SECRETS_KV',
+    namespaceTitle: 'SECRETS_KV',
+    previewNamespaceTitle: 'SECRETS_KV_preview',
+    createArgs: 'SECRETS_KV',
+    namespaces,
+    description: '生产环境 KV namespace',
+  });
+  modifiedConfig = kvConfig.config;
 
-    // Step A: 先从已有的 KV namespace 中查找
-    try {
-      const listOutput = execSync('npx wrangler kv namespace list', { encoding: 'utf-8' });
-      const namespaces = JSON.parse(listOutput);
-      // 精确匹配 "SECRETS_KV"（deploy.js 创建的，用户数据在此）
-      const existing = namespaces.find((ns) => ns.title === 'SECRETS_KV');
-      if (existing) {
-        kvId = existing.id;
-        console.log(`   ✅ 找到已有 KV namespace "${existing.title}": ${kvId}`);
-      }
-    } catch {
-      console.log('   ⚠️  查询 KV namespace 列表失败，尝试创建新的...');
-    }
-
-    // Step B: 没找到才创建
-    if (!kvId) {
-      try {
-        console.log('   📦 未找到已有 KV namespace，创建新的...');
-        const kvOutput = execSync('npx wrangler kv namespace create SECRETS_KV', {
-          encoding: 'utf-8',
-        });
-        const idMatch = kvOutput.match(/id = "([a-f0-9]+)"/);
-        if (idMatch) {
-          kvId = idMatch[1];
-          console.log(`   ✅ KV namespace 已创建: ${kvId}`);
-        } else {
-          console.warn('   ⚠️  无法从输出中提取 KV ID，尝试继续部署...');
-        }
-      } catch (kvError) {
-        console.error('   ❌ 创建 KV namespace 失败');
-        throw kvError;
-      }
-    }
-
-    // 注入 KV 配置到 wrangler.toml
-    if (kvId) {
-      const kvBlock = `[[kv_namespaces]]\nbinding = "SECRETS_KV"\nid = "${kvId}"`;
-      // 替换已有的注释块，或在 [vars] 前插入
-      const commentedKvPattern = /# \[\[kv_namespaces\]\]\r?\n# binding = "SECRETS_KV"\r?\n(?:#[^\n]*\r?\n)*/;
-      if (commentedKvPattern.test(modifiedConfig)) {
-        modifiedConfig = modifiedConfig.replace(commentedKvPattern, kvBlock + '\n');
-      } else {
-        modifiedConfig = modifiedConfig.replace(/(\[vars\])/, kvBlock + '\n\n$1');
-      }
-    }
+  // 开发环境可选复用 development-SECRETS_KV，避免本地/测试环境误创建新资源。
+  if (targetEnv === 'development' || /\[\[env\.development\.kv_namespaces\]\]/.test(modifiedConfig)) {
+    const devKvConfig = ensureKvNamespaceConfig(modifiedConfig, {
+      blockPattern: /\[\[env\.development\.kv_namespaces\]\]\r?\nbinding = "SECRETS_KV"(?:\r?\nid = "[^"]*")?(?:\r?\npreview_id = "[^"]*")?/,
+      commentedPattern: /# \[\[env\.development\.kv_namespaces\]\]\r?\n# binding = "SECRETS_KV"\r?\n(?:#[^\n]*\r?\n)*/,
+      insertBeforePattern: null,
+      blockHeader: '[[env.development.kv_namespaces]]',
+      binding: 'SECRETS_KV',
+      namespaceTitle: 'development-SECRETS_KV',
+      previewNamespaceTitle: null,
+      createArgs: 'SECRETS_KV --env development',
+      namespaces,
+      description: '开发环境 KV namespace',
+    });
+    modifiedConfig = devKvConfig.config;
   }
 
   fs.writeFileSync(wranglerPath, modifiedConfig, 'utf-8');
@@ -161,4 +143,83 @@ try {
   console.error('   ', error.message);
   console.error('');
   process.exit(1);
+}
+
+function ensureKvNamespaceConfig(configText, options) {
+  const {
+    blockPattern,
+    commentedPattern,
+    insertBeforePattern,
+    blockHeader,
+    binding,
+    namespaceTitle,
+    previewNamespaceTitle,
+    createArgs,
+    namespaces,
+    description,
+  } = options;
+
+  const existing = namespaces.find((ns) => ns.title === namespaceTitle);
+  let kvId = existing?.id || null;
+
+  if (kvId) {
+    console.log(`   ✅ 找到已有${description} "${namespaceTitle}": ${kvId}`);
+  } else {
+    try {
+      console.log(`   📦 未找到${description}，创建新的...`);
+      const kvOutput = execSync(`npx wrangler kv namespace create ${createArgs}`, {
+        encoding: 'utf-8',
+      });
+      const idMatch = kvOutput.match(/id = "([a-f0-9]+)"/);
+      if (idMatch) {
+        kvId = idMatch[1];
+        console.log(`   ✅ KV namespace 已创建: ${kvId}`);
+      } else {
+        console.warn('   ⚠️  无法从输出中提取 KV ID，尝试继续部署...');
+      }
+    } catch (kvError) {
+      console.error(`   ❌ 创建${description}失败`);
+      throw kvError;
+    }
+  }
+
+  const previewId = previewNamespaceTitle ? namespaces.find((ns) => ns.title === previewNamespaceTitle)?.id || null : null;
+  const kvBlockLines = [blockHeader, `binding = "${binding}"`];
+  if (kvId) {
+    kvBlockLines.push(`id = "${kvId}"`);
+  }
+  if (previewId) {
+    kvBlockLines.push(`preview_id = "${previewId}"`);
+  }
+  const kvBlock = kvBlockLines.join('\n');
+
+  if (blockPattern.test(configText)) {
+    return {
+      config: configText.replace(blockPattern, kvBlock),
+      kvId,
+      previewId,
+    };
+  }
+
+  if (commentedPattern && commentedPattern.test(configText)) {
+    return {
+      config: configText.replace(commentedPattern, kvBlock + '\n'),
+      kvId,
+      previewId,
+    };
+  }
+
+  if (insertBeforePattern && insertBeforePattern.test(configText)) {
+    return {
+      config: configText.replace(insertBeforePattern, kvBlock + '\n\n$1'),
+      kvId,
+      previewId,
+    };
+  }
+
+  return {
+    config: configText + '\n\n' + kvBlock + '\n',
+    kvId,
+    previewId,
+  };
 }

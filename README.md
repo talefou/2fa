@@ -31,6 +31,7 @@
 3. 打开 Cloudflare 给你的 Workers 链接，**设置管理密码**即可开始使用
 
 > Git 自动构建会直接使用仓库中的 `wrangler.toml` 部署；当前配置已显式声明 `SECRETS_KV`，正常升级不会把现有 KV 绑定解绑。
+> 如果你在 Cloudflare Dashboard 中手动配置 Git 构建命令，**部署命令请使用 `npm run deploy`，不要直接写 `npx wrangler deploy`**，否则会绕过项目的 KV 复用逻辑。
 
 #### 推荐：启用数据加密
 
