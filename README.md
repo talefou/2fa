@@ -30,6 +30,8 @@
 2. 登录 Cloudflare 账户，点击 **Deploy** 等待部署完成（KV 存储自动创建）
 3. 打开 Cloudflare 给你的 Workers 链接，**设置管理密码**即可开始使用
 
+> Git 自动构建会直接使用仓库中的 `wrangler.toml` 部署；当前配置已显式声明 `SECRETS_KV`，正常升级不会把现有 KV 绑定解绑。
+
 #### 推荐：启用数据加密
 
 部署后，在 **Cloudflare Dashboard → Worker → Settings → Variables** 中添加 Secret `ENCRYPTION_KEY`：
