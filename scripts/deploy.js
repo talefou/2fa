@@ -62,8 +62,8 @@ try {
     `SW_VERSION = "${version}"`
   );
 
-  // 检测 KV namespace 配置，自动查找或创建
-  const hasKvBinding = /\[\[kv_namespaces\]\]\r?\nbinding = "SECRETS_KV"\r?\nid = "/.test(modifiedConfig);
+  // 检测 KV namespace 配置（支持仅声明 binding、不填写 id 的 Git 构建模式）
+  const hasKvBinding = /\[\[kv_namespaces\]\][\s\S]*?binding = "SECRETS_KV"/.test(modifiedConfig);
   if (!hasKvBinding) {
     console.log('   🔍 检测到 KV namespace 未配置，查找已有的...');
 
